@@ -7,7 +7,6 @@ output: html_document
 
 ```{r setup, include=FALSE}
 library(tidyverse)
-library(p8105.datasets)
 
 knitr::opts_chunk$set(
   fig.width = 6,
@@ -26,248 +25,125 @@ scale_colour_discrete = scale_colour_viridis_d
 scale_fill_discrete = scale_fill_viridis_d
 ```
 
-## Airbnb
 
 ```{r}
-data("nyc_airbnb")
+library(tidyverse)
+library(p8105.datasets)
+library(modelr)
+library(mgcv)
 
-nyc_airbnb =
-  nyc_airbnb |> 
-  mutate(
-    stars = review_scores_location / 2
-  ) |> 
-  rename(
-    borough = neighbourhood_group,
-  ) |> 
-  filter(
-    borough != "Staten Island"
-  ) |> 
-  select(price, stars, borough, neighbourhood, room_type)
+set.seed(1)
 ```
 
-Fit a linear model
-
 ```{r}
-fit = lm(price ~ stars + borough, data = nyc_airbnb)
-```
+data("lidar")
 
-lets take a look
+lidar_df = 
+  lidar |> 
+  as_tibble() |>
+  mutate(id = row_number())
 
-```{r}
-fit
-summary(fit)
-coef(fit)
-
-names(fit)
-names(summary(fit))
-```
-
-do it better
-
-```{r}
-broom::tidy(fit) |> 
-  select(-std.error) |> 
-  knitr::kable(digits = 3)
-
-broom::glance(fit)
-```
-
-change reference category
-
-```{r}
-fit = 
-  nyc_airbnb |> 
-  mutate(
-    borough = fct_infreq(borough)
-  ) |> 
-  lm(price ~ stars + borough, data = _)
-
-broom::tidy(fit) |> 
-  select(-std.error, -statistic) |> 
-  mutate(term = str_replace(term, "borough", "Borough:")) |> 
-  knitr::kable(digits = 3)
-```
-
-## Diagnostics
-
-diagnostics is basically "look at the residuals"
-
-```{r}
-modelr::add_residuals(nyc_airbnb, fit)
-```
-
-looking at residuals
-
-```{r}
-nyc_airbnb |> 
-  modelr::add_residuals(fit) |> 
-  ggplot(aes(x = stars, y = resid)) +
+lidar_df |> 
+  ggplot(aes(x = range, y = logratio)) + 
   geom_point()
-
-nyc_airbnb |> 
-  modelr::add_residuals(fit) |> 
-  ggplot(aes(x = borough, y = resid)) +
-  geom_violin()
 ```
 
-## Hypothesis Testing
-
 ```{r}
-broom::tidy(fit) |> 
-  mutate(term = str_replace(term, "borough", "Borough: ")) |> 
-  knitr::kable(digits = 3)
+train_df = sample_frac(lidar_df, size = .8)
+test_df = anti_join(lidar_df, train_df, by = "id")
+
+ggplot(train_df, aes(x = range, y = logratio)) + 
+  geom_point() + 
+  geom_point(data = test_df, color = "red")
 ```
 
-try testing nested models
+fit some models
 
 ```{r}
-fit_null = lm(price ~ stars, data = nyc_airbnb)
-fit_alt = lm(price ~ stars + borough, data = nyc_airbnb)
-
-anova(fit_null, fit_alt)
+linear_mod = lm(logratio ~ range, data = train_df)
+smooth_mod = gam(logratio ~ s(range), data = train_df)
+wiggly_mod = gam(logratio ~ s(range, k = 30), sp = 10e-6, data = train_df)
 ```
 
-## Nesting data
-
-try a more complicated model
+make a plot
 
 ```{r}
-nyc_airbnb |> 
-  lm(price ~ stars * borough + room_type * borough, data = _) |> 
-  broom::tidy() |> 
-  knitr::kable(digits = 3)
+train_df |> 
+  add_predictions(wiggly_mod) |> 
+  ggplot(aes(x = range, y = logratio)) +
+  geom_point() +
+  geom_line(aes(y = pred), color = "red")
 ```
 
-what if i wanna know what's happening in Manhattan
+model comparison
 
 ```{r}
-nyc_airbnb |> 
-  filter(borough == "Manhattan") |> 
-  lm(price ~ stars + room_type, data = _) |> 
-  broom::tidy()
-
-nyc_airbnb |> 
-  filter(borough == "Bronx") |> 
-  lm(price ~ stars + room_type, data = _) |> 
-  broom::tidy()
+rmse(linear_mod, test_df)
+rmse(smooth_mod, test_df)
+rmse(wiggly_mod, test_df)
 ```
 
-let's fix this with iteration
+
+## Repeat a bunch of times
+
+Use some nice tools
 
 ```{r}
-airbnb_lm = function(data) {
+cv_df =
+  crossv_mc(lidar_df, 100)
+
+cv_df |> pull(train) |> nth(2) |> as_tibble()
+```
+
+```{r}
+cv_df =
+  crossv_mc(lidar_df, 100) |> 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+```
+
+fit models and get rmses
+
+```{r}
+rmse_comp = function(model, dataset) {
   
-  lm(price ~ stars + room_type, data = data)
+  rmse(model, dataset)
   
 }
 ```
 
 
 ```{r}
-nyc_airbnb |> 
-  nest(datasets = -borough) |> 
+cv_df = 
+  cv_df |> 
   mutate(
-    fits = map(datasets, airbnb_lm),
-    results = map(fits, broom::tidy)
+    linear_fit = map(train, \(df) lm(logratio ~ range, data = df)),
+    smooth_fit = map(train, \(df) gam(logratio ~ s(range), data = df)),
+    wiggly_fit = map(train, \(df) gam(logratio ~ s(range, k = 30), sp = 10e-6, data = df))
   ) |> 
-  select(-datasets, -fits) |> 
-  unnest(results) |> 
-  select(borough, term, estimate) |> 
-  pivot_wider(
-    names_from = term,
-    values_from = estimate
+  mutate(
+    rmse_linear = map2_dbl(linear_fit, test, rmse),
+    rmse_smooth = map2_dbl(smooth_fit, test, rmse),
+    rmse_wiggly = map2_dbl(wiggly_fit, test, rmse)
   )
 ```
 
+Look at this!!
+
 ```{r}
-nyc_airbnb |> 
-  nest(datasets = -borough) |> 
-  mutate(
-    fits = map(datasets, \(data) lm(price ~ stars, data = data)),
-    results = map(fits, broom::tidy)
+cv_df |> 
+  select(starts_with("rmse_")) |> 
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    names_prefix = "rmse_",
+    values_to = "rmse"
   ) |> 
-  select(-datasets, -fits) |> 
-  unnest(results) |> 
-  select(borough, term, estimate) |> 
-  pivot_wider(
-    names_from = term,
-    values_from = estimate
-  )
+  ggplot(aes(x = model, y = rmse)) + 
+  geom_violin()
 ```
-
-
-```{r}
-nyc_airbnb |> 
-  filter(borough == "Manhattan") |> 
-  nest(datasets = -neighbourhood) |> 
-  mutate(
-    fits = map(datasets, \(df) lm(price ~ stars + room_type, data = df)),
-    results = map(fits, broom::tidy)
-  ) |> 
-  select(neighbourhood, results) |> 
-  unnest(results) |> 
-  filter(term == "room_typePrivate room") |> 
-  ggplot(aes(x = neighbourhood, y = estimate)) +
-  geom_point() +
-  theme(axis.text.x = element_text(angle = 80, hjust = 1))
-```
-
-## Logistic regression
-
-import the homicide data
-
-```{r}
-baltimore_df = 
-  read_csv("data/homicide-data.csv") |> 
-  filter(city == "Baltimore") |> 
-  mutate(
-    resolved = as.numeric(disposition == "Closed by arrest"),
-    victim_age = as.numeric(victim_age)
-  )
-```
-
-let's fit logistic regression
-
-```{r}
-fit_logistic =
-  baltimore_df |> 
-  mutate(victim_race = fct_infreq(victim_race)) |> 
-  glm(resolved ~ victim_age + victim_race, data = _, family = binomial())
-
-fit_logistic |> 
-  broom::tidy() |> 
-  mutate(OR = exp(estimate)) |> 
-  select(term, OR, estimate, p.value) |> 
-  knitr::kable(digits = 3)
-```
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
