@@ -1,0 +1,291 @@
+---
+title: "01_linear_models"
+author: "Sameera"
+date: "2026-11-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(p8105.datasets)
+
+knitr::opts_chunk$set(
+  fig.width = 6,
+  fig.asp = .6,
+  out.width = "90%"
+)
+
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+```
+
+## Airbnb
+
+```{r}
+data("nyc_airbnb")
+
+nyc_airbnb =
+  nyc_airbnb |> 
+  mutate(
+    stars = review_scores_location / 2
+  ) |> 
+  rename(
+    borough = neighbourhood_group,
+  ) |> 
+  filter(
+    borough != "Staten Island"
+  ) |> 
+  select(price, stars, borough, neighbourhood, room_type)
+```
+
+Fit a linear model
+
+```{r}
+fit = lm(price ~ stars + borough, data = nyc_airbnb)
+```
+
+lets take a look
+
+```{r}
+fit
+summary(fit)
+coef(fit)
+
+names(fit)
+names(summary(fit))
+```
+
+do it better
+
+```{r}
+broom::tidy(fit) |> 
+  select(-std.error) |> 
+  knitr::kable(digits = 3)
+
+broom::glance(fit)
+```
+
+change reference category
+
+```{r}
+fit = 
+  nyc_airbnb |> 
+  mutate(
+    borough = fct_infreq(borough)
+  ) |> 
+  lm(price ~ stars + borough, data = _)
+
+broom::tidy(fit) |> 
+  select(-std.error, -statistic) |> 
+  mutate(term = str_replace(term, "borough", "Borough:")) |> 
+  knitr::kable(digits = 3)
+```
+
+## Diagnostics
+
+diagnostics is basically "look at the residuals"
+
+```{r}
+modelr::add_residuals(nyc_airbnb, fit)
+```
+
+looking at residuals
+
+```{r}
+nyc_airbnb |> 
+  modelr::add_residuals(fit) |> 
+  ggplot(aes(x = stars, y = resid)) +
+  geom_point()
+
+nyc_airbnb |> 
+  modelr::add_residuals(fit) |> 
+  ggplot(aes(x = borough, y = resid)) +
+  geom_violin()
+```
+
+## Hypothesis Testing
+
+```{r}
+broom::tidy(fit) |> 
+  mutate(term = str_replace(term, "borough", "Borough: ")) |> 
+  knitr::kable(digits = 3)
+```
+
+try testing nested models
+
+```{r}
+fit_null = lm(price ~ stars, data = nyc_airbnb)
+fit_alt = lm(price ~ stars + borough, data = nyc_airbnb)
+
+anova(fit_null, fit_alt)
+```
+
+## Nesting data
+
+try a more complicated model
+
+```{r}
+nyc_airbnb |> 
+  lm(price ~ stars * borough + room_type * borough, data = _) |> 
+  broom::tidy() |> 
+  knitr::kable(digits = 3)
+```
+
+what if i wanna know what's happening in Manhattan
+
+```{r}
+nyc_airbnb |> 
+  filter(borough == "Manhattan") |> 
+  lm(price ~ stars + room_type, data = _) |> 
+  broom::tidy()
+
+nyc_airbnb |> 
+  filter(borough == "Bronx") |> 
+  lm(price ~ stars + room_type, data = _) |> 
+  broom::tidy()
+```
+
+let's fix this with iteration
+
+```{r}
+airbnb_lm = function(data) {
+  
+  lm(price ~ stars + room_type, data = data)
+  
+}
+```
+
+
+```{r}
+nyc_airbnb |> 
+  nest(datasets = -borough) |> 
+  mutate(
+    fits = map(datasets, airbnb_lm),
+    results = map(fits, broom::tidy)
+  ) |> 
+  select(-datasets, -fits) |> 
+  unnest(results) |> 
+  select(borough, term, estimate) |> 
+  pivot_wider(
+    names_from = term,
+    values_from = estimate
+  )
+```
+
+```{r}
+nyc_airbnb |> 
+  nest(datasets = -borough) |> 
+  mutate(
+    fits = map(datasets, \(data) lm(price ~ stars, data = data)),
+    results = map(fits, broom::tidy)
+  ) |> 
+  select(-datasets, -fits) |> 
+  unnest(results) |> 
+  select(borough, term, estimate) |> 
+  pivot_wider(
+    names_from = term,
+    values_from = estimate
+  )
+```
+
+
+```{r}
+nyc_airbnb |> 
+  filter(borough == "Manhattan") |> 
+  nest(datasets = -neighbourhood) |> 
+  mutate(
+    fits = map(datasets, \(df) lm(price ~ stars + room_type, data = df)),
+    results = map(fits, broom::tidy)
+  ) |> 
+  select(neighbourhood, results) |> 
+  unnest(results) |> 
+  filter(term == "room_typePrivate room") |> 
+  ggplot(aes(x = neighbourhood, y = estimate)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 80, hjust = 1))
+```
+
+## Logistic regression
+
+import the homicide data
+
+```{r}
+baltimore_df = 
+  read_csv("data/homicide-data.csv") |> 
+  filter(city == "Baltimore") |> 
+  mutate(
+    resolved = as.numeric(disposition == "Closed by arrest"),
+    victim_age = as.numeric(victim_age)
+  )
+```
+
+let's fit logistic regression
+
+```{r}
+fit_logistic =
+  baltimore_df |> 
+  mutate(victim_race = fct_infreq(victim_race)) |> 
+  glm(resolved ~ victim_age + victim_race, data = _, family = binomial())
+
+fit_logistic |> 
+  broom::tidy() |> 
+  mutate(OR = exp(estimate)) |> 
+  select(term, OR, estimate, p.value) |> 
+  knitr::kable(digits = 3)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
