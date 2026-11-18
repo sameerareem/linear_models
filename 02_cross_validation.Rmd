@@ -145,6 +145,26 @@ cv_df |>
   geom_violin()
 ```
 
+nepalese children df
+
+```{r}
+growth_df = read_csv("./data/nepalese_children.csv")
+```
+
+```{r}
+growth_df
+
+growth_df |> 
+  ggplot(aes(x = weight, y = armc)) +
+  geom_point(alpha = .5)
+```
+```{r}
+#growth_df |> 
+  
+```
+
+
+
 
 
 
